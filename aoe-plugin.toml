@@ -17,10 +17,11 @@ icon = "server"
 
 # Capability grants, prompted at install and pinned to the manifest hash.
 #   runtime.worker -- run the worker; read our own settings (config.get); push
-#                     the settings-page via ui.state.set.
+#                     the settings-page and tool-card badges via ui.state.set.
 #   config.read    -- call mcp.list / mcp.resolve (read the effective server set).
 #   config.write   -- call mcp.add / mcp.edit / mcp.delete (write the global layer).
-capabilities = ["runtime.worker", "config.read", "config.write"]
+#   session.read   -- call sessions.list to push per-session tool-card badges.
+capabilities = ["runtime.worker", "config.read", "config.write", "session.read"]
 
 # A palette command to (re)render the management page. The host maps the command
 # id to the worker method by trailing segment (`status`), which the worker
@@ -99,6 +100,14 @@ type = "string"
 [[ui]]
 slot = "settings-page"
 id = "mcp_manager"
+
+# A provenance pill on each MCP tool-call card in a session transcript. The
+# worker pushes a target-keyed item list per session via ui.state.set; the host
+# matches each item to a card by the raw MCP server name and renders the pill, so
+# the call-time card shows the same provenance the management page lists.
+[[ui]]
+slot = "tool-card-badge"
+id = "provenance"
 
 [runtime]
 kind = "command"
