@@ -37,6 +37,7 @@ import threading
 from typing import Any
 from collections.abc import Callable
 
+from aoe_mcp_plugin import badges
 from aoe_mcp_plugin import uistate
 from aoe_mcp_plugin.rpc import error_response
 from aoe_mcp_plugin.rpc import result_response
@@ -51,8 +52,21 @@ MCP_ADD = "mcp.add"
 MCP_EDIT = "mcp.edit"
 MCP_DELETE = "mcp.delete"
 UI_STATE_SET = "ui.state.set"
+UI_STATE_REMOVE = "ui.state.remove"
+SESSIONS_LIST = "sessions.list"
 SETTINGS_CHANGED = "plugin.settings.changed"
 SERVERS_KEY = "servers"
+
+# Inactive states dropped from sessions.list: a transcript that is not being
+# watched needs no badges, and trashed sessions can pile up and exhaust the
+# per-plugin UI-state quota.
+SESSION_EXCLUDE = ["archived", "snoozed", "trashed"]
+
+# Cadence of the badge poll: how often the worker re-lists sessions to notice a
+# newly opened (or closed) transcript and push (or prune) its badges. Provenance
+# edits are already repainted by the reconcile path; this only covers session
+# churn, so a relaxed interval is fine.
+BADGE_POLL_SECS = 15.0
 
 # The host's FORBIDDEN JSON-RPC code (src/plugin/protocol.rs); mcp.* returns it
 # when a name is owned by a read-only (non-global) layer.
@@ -100,6 +114,9 @@ class Runtime:
         self.stdin = stdin if stdin is not None else sys.stdin
         self.inbox: queue.Queue[Any] = queue.Queue()
         self.stopped = False
+        # Sessions we last pushed tool-card badges to, so a vanished session's
+        # slot is removed (ui.state.remove) rather than left lingering.
+        self._badge_session_ids: set[str] = set()
 
     def _read_stdin(self) -> None:
         """Reader thread: drain stdin into the queue, then post `_EOF`."""
@@ -193,7 +210,8 @@ class Runtime:
         desired = self._desired_servers()
         current = self._current_global_names()
         if current is None:
-            self._push_page(["Could not read the current MCP servers; skipping sync."], status=None)
+            resolve = self._push_page(["Could not read the current MCP servers; skipping sync."], status=None)
+            self._refresh_badges(resolve)
             return
         ops, errors = plan(desired, current)
         applied = 0
@@ -204,10 +222,13 @@ class Runtime:
             else:
                 errors.append(err)
         status = f"Synced {applied} change(s)." if applied and not errors else None
-        self._push_page(errors, status)
+        resolve = self._push_page(errors, status)
+        self._refresh_badges(resolve)
 
-    def _push_page(self, errors: list[str], status: str | None) -> None:
-        """Push the settings-page blocks built from a fresh `mcp.resolve`."""
+    def _push_page(self, errors: list[str], status: str | None) -> dict[str, Any] | None:
+        """Push the settings-page blocks built from a fresh `mcp.resolve`, and
+        return that resolve so the caller can reuse it for the tool-card badges
+        without a second (drift-reconciling) resolve call."""
         reply = self.call_host(MCP_RESOLVE, {})
         resolve = reply.result if reply.ok and isinstance(reply.result, dict) else None
         payload = uistate.build_page(resolve, errors, status)
@@ -220,6 +241,68 @@ class Runtime:
                 "params": {"slot": uistate.SETTINGS_PAGE_SLOT, "id": uistate.SETTINGS_PAGE_ID, "payload": payload},
             }
         )
+        return resolve
+
+    def _list_session_ids(self) -> list[str] | None:
+        """Active session ids, or `None` if the host did not answer with a valid
+        list. `None` (timeout/error/garbage) is distinct from empty: a transient
+        failure must never read as "no sessions", which would prune every
+        session's badge."""
+        reply = self.call_host(SESSIONS_LIST, {"exclude": SESSION_EXCLUDE})
+        if not reply.ok or not isinstance(reply.result, dict):
+            return None
+        sessions = reply.result.get("sessions")
+        if not isinstance(sessions, list):
+            return None
+        if not all(isinstance(s, dict) and isinstance(s.get("id"), str) for s in sessions):
+            return None
+        # Fallback for a host that ignored `exclude`: still drop archived/snoozed.
+        return [s["id"] for s in sessions if not s.get("archived") and not s.get("snoozed")]
+
+    def _push_badges(self, resolve: dict[str, Any] | None, session_ids: list[str]) -> None:
+        """Push the provenance pill list to each active session's
+        `tool-card-badge` slot, then prune the slots of sessions that vanished
+        since the last push."""
+        payload = {"items": badges.badge_items(badges.callable_servers(resolve))}
+        for sid in session_ids:
+            self.send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": next(_outbound_ids),
+                    "method": UI_STATE_SET,
+                    "params": {"slot": badges.SLOT, "id": badges.SLOT_ID, "session_id": sid, "payload": payload},
+                }
+            )
+        for sid in self._badge_session_ids - set(session_ids):
+            self.send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": next(_outbound_ids),
+                    "method": UI_STATE_REMOVE,
+                    "params": {"slot": badges.SLOT, "id": badges.SLOT_ID, "session_id": sid},
+                }
+            )
+        self._badge_session_ids = set(session_ids)
+
+    def _refresh_badges(self, resolve: dict[str, Any] | None) -> None:
+        """Push tool-card badges to every active session using an already-fetched
+        `mcp.resolve`. Skips entirely (no prune) when the session list is
+        unavailable, so a transient failure cannot wipe live badges."""
+        session_ids = self._list_session_ids()
+        if session_ids is None:
+            return
+        self._push_badges(resolve, session_ids)
+
+    def _poll_badges(self) -> None:
+        """Poll tick: if the active-session set changed, re-resolve and re-push
+        badges so a newly opened session gets pills and a closed one is pruned.
+        Steady state (no churn) costs one cheap `sessions.list` per tick."""
+        session_ids = self._list_session_ids()
+        if session_ids is None or set(session_ids) == self._badge_session_ids:
+            return
+        reply = self.call_host(MCP_RESOLVE, {})
+        resolve = reply.result if reply.ok and isinstance(reply.result, dict) else None
+        self._push_badges(resolve, session_ids)
 
     def handle_inbound(self, msg: dict[str, Any]) -> None:
         """Service one host->worker message. `plugin.settings.changed` (scoped to
@@ -253,12 +336,24 @@ class Runtime:
         threading.Thread(target=self._read_stdin, daemon=True).start()
         # Sync and paint once at startup so the page reflects reality before any
         # edit, and any servers configured while the worker was down converge now.
+        # reconcile also pushes the initial tool-card badges to open sessions.
         self.reconcile()
+        next_poll = time.monotonic() + BADGE_POLL_SECS
         while not self.stopped:
-            item = self.inbox.get()
+            timeout = max(0.0, next_poll - time.monotonic())
+            try:
+                item = self.inbox.get(timeout=timeout)
+            except queue.Empty:
+                item = None
             if item is _EOF:
                 break
-            self.handle_inbound(item)
+            if item is not None:
+                self.handle_inbound(item)
+            # A slow tick that only re-pushes badges when the session set changed,
+            # so a transcript opened after startup still gets its provenance pills.
+            if time.monotonic() >= next_poll:
+                next_poll = time.monotonic() + BADGE_POLL_SECS
+                self._poll_badges()
 
 
 def main() -> None:

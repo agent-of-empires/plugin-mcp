@@ -21,6 +21,13 @@ renders everything):
 - **An `MCP servers` settings page**, showing the effective server set with
   provenance, any drift conflicts, kept-on-removal servers, and reconcile
   status. Display only.
+- **A provenance pill on every MCP tool-call card** in a session transcript
+  (the `tool-card-badge` slot), so at call time you can tell where the server
+  came from without opening the settings page: `AoE` (global),
+  the agent name (agent-native, e.g. `Claude`), `Profile`, `Project`, or `Kept`
+  (kept-on-removal). The full canonical label and any shadow chain are in the
+  pill's tooltip, matching the settings-page wording. Rendered in the web
+  dashboard; the native TUI ignores this slot.
 
 When you change the `servers` list, the host notifies the worker
 (`plugin.settings.changed`). The worker diffs your list against the servers the
