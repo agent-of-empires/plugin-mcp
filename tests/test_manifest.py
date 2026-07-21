@@ -30,6 +30,13 @@ def test_declares_settings_page_slot():
     assert any(u["slot"] == "settings-page" and u["id"] == "mcp_manager" for u in ui)
 
 
+def test_declares_tool_card_badge_slot_and_session_read():
+    m = _load()
+    assert any(u["slot"] == "tool-card-badge" and u["id"] == "provenance" for u in m["ui"])
+    # sessions.list, needed to push the per-session badges, requires session.read.
+    assert "session.read" in m["capabilities"]
+
+
 def test_servers_object_list_fields():
     servers = next(s for s in _load()["settings"] if s["key"] == "servers")
     assert servers["type"] == "object_list"
