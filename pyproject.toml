@@ -1,0 +1,115 @@
+[project]
+name = "aoe-mcp-plugin"
+description = "MCP server management plugin for Agent of Empires"
+dynamic = ["version"]
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+# No runtime dependencies: the worker speaks JSON-RPC over stdio with the
+# stdlib alone (json, sys, queue, threading). All MCP reads/writes go through
+# host RPCs, so there is nothing to fetch or parse beyond the wire protocol.
+dependencies = []
+
+[project.scripts]
+aoe-mcp-worker = "aoe_mcp_plugin.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/aoe_mcp_plugin/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aoe_mcp_plugin"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.14.1",
+    "pre-commit>=4.0.1",
+    "pytest>=8.3.4",
+    "ruff>=0.11.4",
+    # Test-only: parse the manifest TOML on Python 3.10 (no stdlib tomllib).
+    "tomli>=2.0",
+]
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = true
+show_column_numbers = true
+warn_unused_ignores = false
+show_error_codes = true
+warn_redundant_casts = true
+local_partial_types = true
+explicit_package_bases = true
+
+[tool.ruff]
+exclude = [
+    ".aoe-build",
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "build",
+    "dist",
+    "venv",
+]
+line-length = 120
+indent-width = 4
+target-version = "py310"
+
+[tool.ruff.lint]
+# Everything on, then turn off rules that fight this codebase's deliberate
+# choices rather than catch real problems.
+select = ["ALL"]
+ignore = [
+    "D",        # docstrings-everywhere: modules are documented; not every function needs one
+    "ANN401",   # Any is intentional at the JSON-RPC boundary
+    "TC001",    # we use `from __future__ import annotations`, no TYPE_CHECKING blocks
+    "TC002",
+    "TC003",
+    "EM101",    # the actionable hints are string literals by design
+    "EM102",
+    "TRY003",   # ... and they live at the raise site / in the exception class
+    "TRY300",   # early return in try reads fine; no spurious else block
+    "COM812",   # conflicts with the formatter
+    "ISC001",   # conflicts with the formatter
+    "CPY001",   # no per-file copyright header
+    "PYI034",   # __enter__ -> Self needs 3.11; we target 3.10
+]
+fixable = ["ALL"]
+unfixable = ["E702"]
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: asserts are the point, fixtures need no annotations/docstrings, and
+# the package dir is an implicit namespace under pytest's rootdir.
+"tests/**" = ["S101", "S106", "ANN", "INP001", "D", "PLR2004", "PLR0911", "FBT002", "ARG001", "ARG002", "SLF001"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+combine-as-imports = false
+force-single-line = true
+split-on-trailing-comma = false
+from-first = false
+length-sort = true
+
+[tool.ruff.lint.pycodestyle]
+ignore-overlong-task-comments = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = ["--strict-markers"]
