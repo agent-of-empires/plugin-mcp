@@ -1,0 +1,113 @@
+# MCP -- an Agent of Empires plugin.
+#
+# Manifest schema: aoe-plugin-api/src/manifest.rs in agent-of-empires. The host
+# parses this strictly (deny_unknown_fields), so every key must match a field in
+# that schema. Field-by-field reference:
+# https://agent-of-empires.com/docs/api/plugin-api/
+
+id = "agent-of-empires.mcp"
+name = "MCP"
+version = "0.1.0"
+# settings-page UI slots and the object_list setting both require api_version
+# >= 10 (the host's current max), so this manifest pins 10.
+api_version = 10
+aoe_version = ">=1.11.0, <2.0.0"
+description = "Manage MCP servers for Agent of Empires: add, edit, and delete the servers AoE forwards to your agents."
+icon = "server"
+
+# Capability grants, prompted at install and pinned to the manifest hash.
+#   runtime.worker -- run the worker; read our own settings (config.get); push
+#                     the settings-page via ui.state.set.
+#   config.read    -- call mcp.list / mcp.resolve (read the effective server set).
+#   config.write   -- call mcp.add / mcp.edit / mcp.delete (write the global layer).
+capabilities = ["runtime.worker", "config.read", "config.write"]
+
+# A palette command to (re)render the management page. The host maps the command
+# id to the worker method by trailing segment (`status`), which the worker
+# answers by reconciling the desired list into the global layer and repainting.
+[[commands]]
+id = "status"
+title = "MCP: status"
+description = "Refresh the MCP server management page."
+
+# The one editable surface. The host renders this object_list as an
+# add/edit/delete/reorder list on BOTH the web settings tab and the TUI Plugins
+# tab; the worker watches `plugin.settings.changed` and reconciles the list into
+# the global mcp.json via the mcp.add / mcp.edit / mcp.delete host RPCs.
+#
+# object_list item fields are limited to string/bool/integer/select/cron (no map
+# or array types), so `args`, `env`, and `headers` are line-encoded strings the
+# worker parses. See each field's description for the encoding.
+[[settings]]
+key = "servers"
+label = "MCP servers"
+description = "AoE-owned MCP servers, written to the global mcp.json. Agent-native, profile, and project-local servers are read-only and are not listed here."
+type = "object_list"
+item_id_key = "name"
+min_items = 0
+
+[[settings.fields]]
+key = "name"
+label = "Name"
+description = "Unique server name."
+type = "string"
+required = true
+
+[[settings.fields]]
+key = "transport"
+label = "Transport"
+description = "stdio launches a local command; http and sse connect to a remote URL."
+type = "select"
+options = ["stdio", "http", "sse"]
+default = "stdio"
+required = true
+
+[[settings.fields]]
+key = "command"
+label = "Command (stdio)"
+description = "Executable to launch. Required for the stdio transport; ignored for http/sse."
+type = "string"
+
+[[settings.fields]]
+key = "args"
+label = "Arguments (stdio)"
+description = "Command arguments, one per line. Ignored for http/sse."
+type = "string"
+
+[[settings.fields]]
+key = "url"
+label = "URL (http/sse)"
+description = "Server URL. Required for the http and sse transports; ignored for stdio."
+type = "string"
+
+[[settings.fields]]
+key = "env"
+label = "Environment (stdio)"
+description = "Environment variables as KEY=VALUE, one per line. Ignored for http/sse."
+type = "string"
+
+[[settings.fields]]
+key = "headers"
+label = "Headers (http/sse)"
+description = "Request headers as NAME=VALUE, one per line. Ignored for stdio."
+type = "string"
+
+# A routed full page in the dashboard settings nav. The host renders the blocks
+# the worker pushes via ui.state.set; this page shows the effective server set
+# with provenance, any drift conflicts, and reconcile status. Editing happens in
+# the Servers list above, not here (the block vocabulary is display-only).
+[[ui]]
+slot = "settings-page"
+id = "mcp_manager"
+
+[runtime]
+kind = "command"
+command = [".aoe-build/venv/bin/aoe-mcp-worker"]
+
+[[runtime.build]]
+command = ["python3", "-m", "venv", ".aoe-build/venv"]
+platforms = ["linux", "macos"]
+
+[[runtime.build]]
+command = [".aoe-build/venv/bin/pip", "install", "."]
+platforms = ["linux", "macos"]
